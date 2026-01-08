@@ -26,9 +26,17 @@ public class DatabaseConfig {
     
     @EventListener(ApplicationStartingEvent.class)
     public void logDatabaseConfig() {
+        System.out.println("=== Database Configuration ===");
+        System.out.println("DATABASE_URL env var: " + (databaseUrlEnv.isEmpty() ? "NOT SET" : "SET"));
+        System.out.println("DATABASE_USERNAME env var: " + (databaseUsernameEnv.isEmpty() ? "NOT SET" : "SET"));
+        System.out.println("DATABASE_PASSWORD env var: " + (System.getenv("DATABASE_PASSWORD") == null ? "NOT SET" : "SET"));
+        System.out.println("Spring datasource URL: " + maskPassword(datasourceUrl));
+        System.out.println("Spring datasource username: " + datasourceUsername);
+        System.out.println("==============================");
         logger.info("=== Database Configuration ===");
         logger.info("DATABASE_URL env var: {}", databaseUrlEnv.isEmpty() ? "NOT SET" : "SET");
         logger.info("DATABASE_USERNAME env var: {}", databaseUsernameEnv.isEmpty() ? "NOT SET" : "SET");
+        logger.info("DATABASE_PASSWORD env var: {}", System.getenv("DATABASE_PASSWORD") == null ? "NOT SET" : "SET");
         logger.info("Spring datasource URL: {}", maskPassword(datasourceUrl));
         logger.info("Spring datasource username: {}", datasourceUsername);
         logger.info("==============================");
