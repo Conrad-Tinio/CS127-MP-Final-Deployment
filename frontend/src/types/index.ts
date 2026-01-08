@@ -68,6 +68,7 @@ export interface Entry {
   payments?: Payment[]
   installmentPlan?: InstallmentPlan
   paymentAllocations?: PaymentAllocation[]
+  userRole?: 'LENDER' | 'BORROWER' // Current user's role for this entry
 }
 
 export interface Payment {
@@ -82,6 +83,7 @@ export interface Payment {
   entryName?: string
   entryReferenceId?: string
   proofUrl?: string
+  hasProof?: boolean // Indicates if payment has proof/attachment
 }
 
 export interface PaymentAllocation {

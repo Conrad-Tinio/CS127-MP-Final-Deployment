@@ -25,4 +25,3 @@ services:
         value: "3"
       - key: HIKARI_MIN_IDLE
         value: "1"
-

@@ -30,6 +30,12 @@ public class InstallmentController {
         return ResponseEntity.ok(Map.of("penalty", penalty));
     }
     
+    @GetMapping("/terms/{termId}/delinquent-late-fee")
+    public ResponseEntity<Map<String, BigDecimal>> getDelinquentLateFee(@PathVariable UUID termId) {
+        BigDecimal lateFee = installmentService.calculateDelinquentLateFee(termId);
+        return ResponseEntity.ok(Map.of("lateFee", lateFee));
+    }
+    
     @PutMapping("/terms/{termId}/status")
     public ResponseEntity<InstallmentTermDTO> updateTermStatus(
             @PathVariable UUID termId,

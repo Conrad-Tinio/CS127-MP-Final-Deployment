@@ -57,6 +57,9 @@ public class EntryService {
     @Autowired
     private PaymentAllocationPaymentRepository paymentAllocationPaymentRepository;
     
+    @Autowired
+    private InstallmentService installmentService;
+    
     private Person getOrCreateCurrentUser() {
         String userName = UserContext.getCurrentUserName();
         return personRepository.findByFullName(userName)
@@ -89,13 +92,49 @@ public class EntryService {
         return isLender != isBorrower; // XOR: exactly one must be true
     }
     
+    /**
+     * Determines the current user's role for an entry.
+     * @param entry The entry to check
+     * @param parentUserId The current user's ID
+     * @return "LENDER" if user is the lender, "BORROWER" if user is the borrower, null otherwise
+     */
+    private String getUserRoleForEntry(Entry entry, UUID parentUserId) {
+        if (entry.getLenderPerson() != null && 
+            entry.getLenderPerson().getPersonId().equals(parentUserId)) {
+            return "LENDER";
+        }
+        
+        // Check if user is borrower (person or group member)
+        if (entry.getBorrowerPerson() != null && 
+            entry.getBorrowerPerson().getPersonId().equals(parentUserId)) {
+            return "BORROWER";
+        }
+        
+        // Check if user is member of borrower group
+        if (entry.getBorrowerGroup() != null) {
+            boolean isGroupMember = groupMemberRepository.existsByGroup_GroupIdAndPerson_PersonId(
+                entry.getBorrowerGroup().getGroupId(), parentUserId);
+            if (isGroupMember) {
+                return "BORROWER";
+            }
+        }
+        
+        return null; // User is not related to this entry
+    }
+    
     public List<EntryDTO> getAllEntries() {
         Person currentUser = getOrCreateCurrentUser();
         UUID currentUserId = currentUser.getPersonId();
         
         return entryRepository.findAll().stream()
                 .filter(entry -> isEntryRelatedToParentUser(entry, currentUserId))
-                .map(this::convertToDTO)
+                .map(entry -> {
+                    EntryDTO dto = convertToDTO(entry);
+                    // Determine and set user role for this entry
+                    String userRole = getUserRoleForEntry(entry, currentUserId);
+                    dto.setUserRole(userRole);
+                    return dto;
+                })
                 .collect(Collectors.toList());
     }
     
@@ -103,11 +142,26 @@ public class EntryService {
         Entry entry = entryRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Entry not found with id: " + id));
         
+        // Update delinquent terms for installment entries before returning
+        if (entry.getTransactionType() == TransactionType.INSTALLMENT_EXPENSE) {
+            installmentService.updateDelinquentTermsForEntry(id);
+            // Reload entry to get updated term statuses
+            entry = entryRepository.findById(id)
+                    .orElseThrow(() -> new IllegalArgumentException("Entry not found with id: " + id));
+        }
+        
         // Allow access to any entry by direct ID, regardless of user involvement
         // This enables viewing entries immediately after creation, even if the creator
         // is not involved in the entry. The getAllEntries() method still filters
         // to only show entries where the user is involved.
-        return convertToDTO(entry);
+        EntryDTO dto = convertToDTO(entry);
+        
+        // Determine and set user role for this entry
+        Person currentUser = getOrCreateCurrentUser();
+        String userRole = getUserRoleForEntry(entry, currentUser.getPersonId());
+        dto.setUserRole(userRole);
+        
+        return dto;
     }
     
     public EntryDTO createEntry(CreateEntryRequest request, MultipartFile proof) {
@@ -424,16 +478,54 @@ public class EntryService {
         Entry entry = entryRepository.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("Entry not found with id: " + id));
         
-        Person currentUser = getOrCreateCurrentUser();
-        if (!isEntryRelatedToParentUser(entry, currentUser.getPersonId())) {
-            throw new IllegalArgumentException("Entry not found with id: " + id);
-        }
+        // Allow updating entries by direct entry ID, regardless of user involvement
+        // This enables editing entries immediately after creation, even if the creator
+        // is not involved in the entry. This matches the behavior of getEntryById.
         
+        // Store old amount borrowed to calculate remaining balance adjustment
+        BigDecimal oldAmountBorrowed = entry.getAmountBorrowed();
+        
+        // Update basic fields
         entry.setEntryName(request.getEntryName());
         entry.setDescription(request.getDescription());
         entry.setDateBorrowed(request.getDateBorrowed());
         entry.setNotes(request.getNotes());
         entry.setPaymentNotes(request.getPaymentNotes());
+        
+        // Update amount borrowed if provided
+        if (request.getAmountBorrowed() != null) {
+            entry.setAmountBorrowed(request.getAmountBorrowed());
+            
+            // Adjust amount remaining when amount borrowed changes
+            // If amount borrowed increased, add the difference to remaining
+            // If amount borrowed decreased, subtract the difference from remaining (but don't go negative)
+            BigDecimal difference = request.getAmountBorrowed().subtract(oldAmountBorrowed);
+            BigDecimal newRemaining = entry.getAmountRemaining().add(difference);
+            
+            // Ensure remaining doesn't go below zero
+            if (newRemaining.compareTo(BigDecimal.ZERO) < 0) {
+                newRemaining = BigDecimal.ZERO;
+            }
+            
+            entry.setAmountRemaining(newRemaining);
+            
+            // Update status based on new remaining amount
+            if (newRemaining.compareTo(BigDecimal.ZERO) == 0) {
+                entry.setStatus(PaymentStatus.PAID);
+                if (entry.getDateFullyPaid() == null) {
+                    entry.setDateFullyPaid(LocalDate.now());
+                }
+            } else if (newRemaining.compareTo(request.getAmountBorrowed()) < 0) {
+                entry.setStatus(PaymentStatus.PARTIALLY_PAID);
+            } else {
+                entry.setStatus(PaymentStatus.UNPAID);
+            }
+        }
+        
+        // Update payment method if provided
+        if (request.getPaymentMethod() != null) {
+            entry.setPaymentMethod(request.getPaymentMethod());
+        }
         
         Entry updated = entryRepository.save(entry);
         return convertToDTO(updated);
@@ -600,17 +692,105 @@ public class EntryService {
                     paymentDTO.setPaymentId(pe.getPayment().getPaymentId());
                     paymentDTO.setPaymentDate(pe.getPayment().getPaymentDate());
                     paymentDTO.setPaymentAmount(pe.getPayment().getPaymentAmount());
+                    paymentDTO.setChangeAmount(pe.getPayment().getChangeAmount());
                     if (pe.getPayment().getPayeePerson() != null) {
                         paymentDTO.setPayeePersonId(pe.getPayment().getPayeePerson().getPersonId());
                         paymentDTO.setPayeePersonName(pe.getPayment().getPayeePerson().getFullName());
                     }
                     paymentDTO.setNotes(pe.getPayment().getNotes());
+                    paymentDTO.setEntryId(entry.getEntryId());
+                    paymentDTO.setEntryName(entry.getEntryName());
+                    paymentDTO.setEntryReferenceId(entry.getReferenceId());
                     return paymentDTO;
                 })
                 .collect(Collectors.toList());
         dto.setPayments(payments);
         
+        // Load payment allocations for group expenses
+        if (entry.getTransactionType() == TransactionType.GROUP_EXPENSE) {
+            List<PaymentAllocation> allocations = paymentAllocationRepository.findByEntry_EntryId(entry.getEntryId());
+            List<com.loantracking.dto.PaymentAllocationDTO> allocationDTOs = allocations.stream()
+                    .map(this::convertPaymentAllocationToDTO)
+                    .collect(Collectors.toList());
+            dto.setPaymentAllocations(allocationDTOs);
+        }
+        
         return dto;
+    }
+    
+    /**
+     * Converts PaymentAllocation to DTO, computing status and percentage.
+     * This is a simplified version that reuses the same logic from PaymentAllocationService.
+     */
+    private com.loantracking.dto.PaymentAllocationDTO convertPaymentAllocationToDTO(PaymentAllocation allocation) {
+        Entry entry = allocation.getEntry();
+        com.loantracking.dto.PaymentAllocationDTO dto = new com.loantracking.dto.PaymentAllocationDTO();
+        dto.setAllocationId(allocation.getAllocationId());
+        dto.setEntryId(allocation.getEntry().getEntryId());
+        dto.setPersonId(allocation.getPerson().getPersonId());
+        dto.setPersonName(allocation.getPerson().getFullName());
+        dto.setDescription(allocation.getDescription());
+        dto.setAmount(allocation.getAmount());
+        dto.setNotes(allocation.getNotes());
+        
+        // Compute status based on payments made for this allocation
+        dto.setPaymentAllocationStatus(computePaymentAllocationStatus(allocation, entry));
+        
+        // Compute percentage of total
+        if (entry.getAmountBorrowed().compareTo(BigDecimal.ZERO) > 0) {
+            BigDecimal percentage = allocation.getAmount()
+                    .divide(entry.getAmountBorrowed(), 4, java.math.RoundingMode.HALF_UP)
+                    .multiply(BigDecimal.valueOf(100));
+            dto.setPercentageOfTotal(percentage);
+        } else {
+            dto.setPercentageOfTotal(BigDecimal.ZERO);
+        }
+        
+        return dto;
+    }
+    
+    /**
+     * Compute payment allocation status based on payments made
+     * UNPAID: No payments made for this allocation
+     * PARTIALLY_PAID: Some payments made, but less than allocated amount
+     * PAID: Payments made equal or exceed allocated amount, OR entry is marked as PAID (completed)
+     */
+    private com.loantracking.model.PaymentAllocationStatus computePaymentAllocationStatus(PaymentAllocation allocation, Entry entry) {
+        // If the entry is marked as PAID (completed), all allocations are considered PAID
+        if (entry.getStatus() == PaymentStatus.PAID) {
+            return com.loantracking.model.PaymentAllocationStatus.PAID;
+        }
+        
+        // Use linked allocation payments (more precise tracking)
+        List<PaymentAllocationPayment> linkedPayments = 
+            paymentAllocationPaymentRepository.findByAllocation_AllocationId(allocation.getAllocationId());
+        
+        if (!linkedPayments.isEmpty()) {
+            // Use linked payments - sum amounts specifically allocated to this allocation
+            BigDecimal totalPaid = linkedPayments.stream()
+                    .map(PaymentAllocationPayment::getAmount)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            
+            // Compare with allocated amount
+            if (totalPaid.compareTo(BigDecimal.ZERO) == 0) {
+                return com.loantracking.model.PaymentAllocationStatus.UNPAID;
+            } else if (totalPaid.compareTo(allocation.getAmount()) < 0) {
+                return com.loantracking.model.PaymentAllocationStatus.PARTIALLY_PAID;
+            } else {
+                return com.loantracking.model.PaymentAllocationStatus.PAID;
+            }
+        } else {
+            // Fallback: If no linked payments, check if entry has any payments at all
+            // This is less precise but handles legacy cases
+            List<PaymentEntry> paymentEntries = paymentEntryRepository.findByEntry_EntryId(entry.getEntryId());
+            if (paymentEntries.isEmpty()) {
+                return com.loantracking.model.PaymentAllocationStatus.UNPAID;
+            } else {
+                // If entry has payments but this allocation has no linked payments,
+                // we can't determine the exact status - default to UNPAID for safety
+                return com.loantracking.model.PaymentAllocationStatus.UNPAID;
+            }
+        }
     }
     
     private InstallmentPlanDTO convertInstallmentPlanToDTO(InstallmentPlan plan) {

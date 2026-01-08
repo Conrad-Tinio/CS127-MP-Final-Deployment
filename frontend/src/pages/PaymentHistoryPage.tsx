@@ -31,10 +31,12 @@ export default function PaymentHistoryPage() {
   const [dateFilter, setDateFilter] = useState<string>('all')
   const [selectedPayment, setSelectedPayment] = useState<PaymentWithEntry | null>(null)
   const [showDetailModal, setShowDetailModal] = useState(false)
+  const [totalPaidPenalties, setTotalPaidPenalties] = useState<number>(0)
 
   // Stats
   const totalPayments = payments.length
-  const totalAmount = payments.reduce((sum, p) => sum + p.paymentAmount, 0)
+  const totalPaymentAmount = payments.reduce((sum, p) => sum + p.paymentAmount, 0)
+  const totalAmount = totalPaymentAmount + totalPaidPenalties // Include penalties in total
   const thisMonthPayments = payments.filter(p => {
     const paymentDate = new Date(p.paymentDate)
     const now = new Date()
@@ -52,11 +54,15 @@ export default function PaymentHistoryPage() {
 
   const loadPayments = async () => {
     try {
-      // Load all payments and entries
-      const [paymentsRes, entriesRes] = await Promise.all([
+      // Load all payments, entries, and total paid penalties
+      const [paymentsRes, entriesRes, penaltiesRes] = await Promise.all([
         paymentApi.getAll(),
-        entryApi.getAll()
+        entryApi.getAll(),
+        paymentApi.getTotalPaidPenalties()
       ])
+      
+      // Set total paid penalties
+      setTotalPaidPenalties(penaltiesRes.data.totalPaidPenalties || 0)
       
       // Map entries for quick lookup
       const entriesMap = new Map<string, Entry>()
@@ -182,9 +188,14 @@ export default function PaymentHistoryPage() {
             <div className="w-10 h-10 rounded-xl bg-accent-500/20 flex items-center justify-center">
               <DollarSign className="w-5 h-5 text-accent-400" />
             </div>
-            <div>
+            <div className="flex-1">
               <p className="text-sm text-dark-400">Total Amount</p>
-              <p className="text-xl font-display font-bold text-accent-400">₱{totalAmount.toLocaleString()}</p>
+              <p className="text-xl font-display font-bold text-accent-400">₱{totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+              {totalPaidPenalties > 0 && (
+                <p className="text-xs text-dark-500 mt-1">
+                  (includes ₱{totalPaidPenalties.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in late fees)
+                </p>
+              )}
             </div>
           </div>
         </div>

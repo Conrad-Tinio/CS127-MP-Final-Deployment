@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { entryApi } from '../services/api'
+import { dashboardApi, type DashboardSummary } from '../services/api'
 import type { Entry } from '../types'
 import { format } from 'date-fns'
 import { 
@@ -15,25 +15,26 @@ import {
 } from 'lucide-react'
 
 export default function HomePage() {
-  const [entries, setEntries] = useState<Entry[]>([])
+  const [dashboard, setDashboard] = useState<DashboardSummary | null>(null)
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    loadEntries()
+    loadDashboard()
   }, [])
 
-  const loadEntries = async () => {
+  const loadDashboard = async () => {
     try {
-      const response = await entryApi.getAll()
-      setEntries(response.data)
+      // Use optimized dashboard endpoint instead of fetching all entries
+      const response = await dashboardApi.getSummary()
+      setDashboard(response.data)
     } catch (error) {
-      console.error('Error loading entries:', error)
+      console.error('Error loading dashboard:', error)
     } finally {
       setLoading(false)
     }
   }
 
-  if (loading) {
+  if (loading || !dashboard) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="flex flex-col items-center gap-4">
@@ -44,39 +45,72 @@ export default function HomePage() {
     )
   }
 
-  const recentEntries = entries.slice(0, 5)
-  const unpaidEntries = entries.filter(e => e.status === 'UNPAID')
-  const partiallyPaidEntries = entries.filter(e => e.status === 'PARTIALLY_PAID')
-  const paidEntries = entries.filter(e => e.status === 'PAID')
+  // Use pre-computed values from backend instead of calculating in frontend
+  const recentEntries = dashboard.recentEntries
+  const totalBorrowed = dashboard.totalBorrowed
+  const totalRemaining = dashboard.totalRemaining
+  const totalPaidPenalties = dashboard.totalPaidPenalties || 0
   
-  const totalBorrowed = entries.reduce((sum, e) => sum + e.amountBorrowed, 0)
-  const totalRemaining = entries.reduce((sum, e) => sum + e.amountRemaining, 0)
+  // Calculate total paid including penalties
+  const totalPaid = totalBorrowed - totalRemaining + totalPaidPenalties
+  
+  // Calculate payment progress percentage with better precision
+  const paymentProgress = totalBorrowed > 0 
+    ? Math.max(0, Math.min(100, (totalPaid / totalBorrowed) * 100))
+    : 0
+  
+  // Format percentage with appropriate precision
+  const formatPercentage = (percent: number): string => {
+    if (percent === 0) return '0.00'
+    if (percent < 0.01) return percent.toFixed(4) // Show 4 decimals for very small percentages
+    if (percent < 1) return percent.toFixed(2) // Show 2 decimals for small percentages
+    return percent.toFixed(1) // Show 1 decimal for larger percentages
+  }
+  
+  // Format large numbers with abbreviations
+  const formatCurrency = (amount: number): string => {
+    if (amount >= 1000000000) {
+      return `₱${(amount / 1000000000).toFixed(2)}B`
+    }
+    if (amount >= 1000000) {
+      return `₱${(amount / 1000000).toFixed(2)}M`
+    }
+    if (amount >= 1000) {
+      return `₱${(amount / 1000).toFixed(2)}K`
+    }
+    return `₱${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
+  
+  // Full format for detailed display
+  const formatCurrencyFull = (amount: number): string => {
+    return `₱${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
 
   const stats = [
     {
       label: 'Total Entries',
-      value: entries.length,
+      value: dashboard.totalEntries,
       icon: TrendingUp,
       color: 'primary',
       gradient: 'from-primary-500 to-primary-400',
     },
     {
       label: 'Unpaid',
-      value: unpaidEntries.length,
+      value: dashboard.unpaidCount,
       icon: AlertCircle,
       color: 'rose',
       gradient: 'from-rose-500 to-rose-400',
     },
     {
       label: 'In Progress',
-      value: partiallyPaidEntries.length,
+      value: dashboard.partiallyPaidCount,
       icon: Clock,
       color: 'amber',
       gradient: 'from-amber-500 to-amber-400',
     },
     {
       label: 'Completed',
-      value: paidEntries.length,
+      value: dashboard.paidCount,
       icon: CheckCircle2,
       color: 'accent',
       gradient: 'from-accent-500 to-accent-400',
@@ -140,7 +174,9 @@ export default function HomePage() {
                 </div>
                 <div>
                   <p className="text-sm text-dark-400">Total Borrowed</p>
-                  <p className="text-lg font-semibold text-dark-100">₱{totalBorrowed.toLocaleString()}</p>
+                  <p className="text-lg font-semibold text-dark-100">
+                    {formatCurrencyFull(totalBorrowed)}
+                  </p>
                 </div>
               </div>
             </div>
@@ -151,7 +187,9 @@ export default function HomePage() {
                 </div>
                 <div>
                   <p className="text-sm text-dark-400">Remaining Balance</p>
-                  <p className="text-lg font-semibold text-dark-100">₱{totalRemaining.toLocaleString()}</p>
+                  <p className="text-lg font-semibold text-dark-100">
+                    {formatCurrencyFull(totalRemaining)}
+                  </p>
                 </div>
               </div>
             </div>
@@ -162,7 +200,14 @@ export default function HomePage() {
                 </div>
                 <div>
                   <p className="text-sm text-dark-400">Total Paid</p>
-                  <p className="text-lg font-semibold text-dark-100">₱{(totalBorrowed - totalRemaining).toLocaleString()}</p>
+                  <p className="text-lg font-semibold text-dark-100">
+                    {formatCurrencyFull(totalPaid)}
+                  </p>
+                  {totalPaidPenalties > 0 && (
+                    <p className="text-xs text-dark-500 mt-1">
+                      (includes ₱{totalPaidPenalties.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} in late fees)
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -192,7 +237,7 @@ export default function HomePage() {
                   stroke="url(#progressGradient)"
                   strokeWidth="12"
                   strokeLinecap="round"
-                  strokeDasharray={`${totalBorrowed > 0 ? ((totalBorrowed - totalRemaining) / totalBorrowed) * 440 : 0} 440`}
+                  strokeDasharray={`${(paymentProgress / 100) * 440} 440`}
                 />
                 <defs>
                   <linearGradient id="progressGradient" x1="0%" y1="0%" x2="100%" y2="0%">
@@ -202,10 +247,13 @@ export default function HomePage() {
                 </defs>
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">
-                <span className="text-3xl font-display font-bold text-dark-50">
-                  {totalBorrowed > 0 ? Math.round(((totalBorrowed - totalRemaining) / totalBorrowed) * 100) : 0}%
+                <span className="text-3xl font-display font-bold text-dark-50" title={`${paymentProgress.toFixed(4)}%`}>
+                  {formatPercentage(paymentProgress)}%
                 </span>
                 <span className="text-sm text-dark-400">Paid</span>
+                {totalPaidPenalties > 0 && (
+                  <span className="text-xs text-dark-500 mt-1">incl. penalties</span>
+                )}
               </div>
             </div>
           </div>

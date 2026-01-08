@@ -38,6 +38,7 @@ public class EntryDTO {
     private List<PaymentDTO> payments;
     private InstallmentPlanDTO installmentPlan;
     private List<PaymentAllocationDTO> paymentAllocations;
+    private String userRole; // "LENDER" or "BORROWER" - indicates current user's role for this entry
 }
 
 

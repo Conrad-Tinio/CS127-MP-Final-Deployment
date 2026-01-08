@@ -79,6 +79,7 @@ export const paymentApi = {
   getAll: () => api.get<Payment[]>('/payments'),
   getById: (id: string) => api.get<Payment>(`/payments/${id}`),
   getByEntry: (entryId: string) => api.get<Payment[]>(`/payments/entry/${entryId}`),
+  getTotalPaidPenalties: () => api.get<{ totalPaidPenalties: number }>('/payments/total-paid-penalties'),
   create: (payment: CreatePaymentRequest) => api.post<Payment>('/payments', payment),
   createWithProof: (payment: CreatePaymentRequest, file: File) => {
     const formData = new FormData()
@@ -108,9 +109,26 @@ export const paymentAllocationApi = {
 export const installmentApi = {
   skipTerm: (termId: string) => api.post(`/installments/terms/${termId}/skip`),
   getSkipPenalty: (termId: string) => api.get<{ penalty: number }>(`/installments/terms/${termId}/skip-penalty`),
+  getDelinquentLateFee: (termId: string) => api.get<{ lateFee: number }>(`/installments/terms/${termId}/delinquent-late-fee`),
   updateTermStatus: (termId: string, status: string) => 
     api.put(`/installments/terms/${termId}/status?status=${status}`),
   updateDelinquent: () => api.post('/installments/update-delinquent'),
+}
+
+// Dashboard API - optimized endpoints for faster loading
+export interface DashboardSummary {
+  totalEntries: number
+  unpaidCount: number
+  partiallyPaidCount: number
+  paidCount: number
+  totalBorrowed: number
+  totalRemaining: number
+  totalPaidPenalties: number
+  recentEntries: Entry[]
+}
+
+export const dashboardApi = {
+  getSummary: () => api.get<DashboardSummary>('/dashboard/summary'),
 }
 
 export default api

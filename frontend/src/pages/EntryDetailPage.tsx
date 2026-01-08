@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { entryApi, paymentApi, paymentAllocationApi, groupApi, installmentApi } from '../services/api'
+import api from '../services/api'
 import type { Entry, Payment, Person, CreatePaymentRequest, PaymentAllocation, Group, InstallmentTerm } from '../types'
 import PersonSelector from '../components/PersonSelector'
 import Toast, { type ToastType } from '../components/Toast'
@@ -26,7 +27,9 @@ import {
   Edit,
   Trash2,
   SkipForward,
-  CreditCard
+  CreditCard,
+  Eye,
+  Receipt
 } from 'lucide-react'
 
 export default function EntryDetailPage() {
@@ -65,6 +68,11 @@ export default function EntryDetailPage() {
   const [selectedTerm, setSelectedTerm] = useState<InstallmentTerm | null>(null)
   const [skippingTerm, setSkippingTerm] = useState<string | null>(null)
   const [loadingPenalty, setLoadingPenalty] = useState(false)
+  const [includedLateFees, setIncludedLateFees] = useState(0) // Track late fees included in current payment
+  const [showPaymentDetailModal, setShowPaymentDetailModal] = useState(false)
+  const [selectedPaymentDetail, setSelectedPaymentDetail] = useState<Payment | null>(null)
+  const [paymentProofUrl, setPaymentProofUrl] = useState<string | null>(null)
+  const [loadingProof, setLoadingProof] = useState(false)
 
   useEffect(() => {
     if (id) {
@@ -85,6 +93,20 @@ export default function EntryDetailPage() {
     try {
       const response = await entryApi.getById(id)
       setEntry(response.data)
+      
+      // Update delinquent terms for installment entries
+      // (Backend already does this, but this ensures real-time updates)
+      if (response.data.transactionType === 'INSTALLMENT_EXPENSE') {
+        try {
+          await installmentApi.updateDelinquent()
+          // Reload entry to get updated term statuses
+          const updatedResponse = await entryApi.getById(id)
+          setEntry(updatedResponse.data)
+        } catch (error) {
+          // Silently fail - backend already updates on getEntryById
+          console.debug('Delinquent update check failed (may already be updated):', error)
+        }
+      }
     } catch (error: any) {
       console.error('Error loading entry:', error)
       const errorMessage = error?.response?.data?.error || 
@@ -154,13 +176,58 @@ export default function EntryDetailPage() {
     }
   }
 
-  const handlePayTerm = (term: InstallmentTerm) => {
+  const viewPaymentDetails = async (payment: Payment) => {
+    setSelectedPaymentDetail(payment)
+    setShowPaymentDetailModal(true)
+    setPaymentProofUrl(null)
+    
+    // Load payment proof if available
+    if (payment.hasProof) {
+      setLoadingProof(true)
+      try {
+        const response = await api.get(`/payments/${payment.paymentId}/proof`, {
+          responseType: 'blob'
+        })
+        const blob = new Blob([response.data])
+        const url = URL.createObjectURL(blob)
+        setPaymentProofUrl(url)
+      } catch (error) {
+        console.error('Error loading payment proof:', error)
+        setPaymentProofUrl(null)
+      } finally {
+        setLoadingProof(false)
+      }
+    }
+  }
+  
+  const handlePayTerm = (term: InstallmentTerm, termLateFee: number = 0) => {
     setSelectedTerm(term)
-    // Pre-fill amount with amount per term
+    // Pre-fill amount with amount per term plus late fees
     if (entry?.installmentPlan) {
+      const baseAmount = entry.installmentPlan!.amountPerTerm
+      
+      // Calculate penalties from the immediately preceding SKIPPED term only (not all skipped terms)
+      // Late fee from a skipped term should only be added to the next term's payment
+      const currentTermNumber = term.termNumber
+      const sortedTerms = [...(entry.installmentPlan!.installmentTerms || [])].sort((a, b) => a.termNumber - b.termNumber)
+      let skippedTermPenalty = 0
+      
+      // Check only the immediately preceding term
+      if (currentTermNumber > 1) {
+        const prevTerm = sortedTerms[currentTermNumber - 2] // -2 because array is 0-indexed and we want previous term
+        if (prevTerm && prevTerm.termStatus === 'SKIPPED' && prevTerm.penaltyApplied && prevTerm.penaltyApplied > 0) {
+          skippedTermPenalty = prevTerm.penaltyApplied
+        }
+      }
+      
+      // Total late fees = delinquent term's late fee + penalty from immediately preceding skipped term
+      const totalLateFees = termLateFee + skippedTermPenalty
+      const totalAmount = baseAmount + totalLateFees
+      
+      setIncludedLateFees(totalLateFees)
       setPaymentFormData(prev => ({
         ...prev,
-        paymentAmount: entry.installmentPlan!.amountPerTerm.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
+        paymentAmount: totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
         paymentDate: new Date().toISOString().split('T')[0],
       }))
     }
@@ -200,6 +267,7 @@ export default function EntryDetailPage() {
 
       setShowInstallmentPaymentModal(false)
       setSelectedTerm(null)
+      setIncludedLateFees(0)
       setPaymentFormData({
         paymentDate: '',
         paymentAmount: '',
@@ -246,6 +314,11 @@ export default function EntryDetailPage() {
       // Set default date to today
       const today = new Date().toISOString().split('T')[0]
       
+      // For STRAIGHT transactions, pre-fill payment amount with full amount borrowed
+      const defaultAmount = entry.transactionType === 'STRAIGHT_EXPENSE' 
+        ? entry.amountBorrowed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+        : ''
+      
       // If entry has a borrower person (not a group), set it as default payee
       if (entry.borrowerPersonId && !entry.borrowerGroupId && entry.borrowerPersonName) {
         // Create person object from entry data
@@ -255,7 +328,7 @@ export default function EntryDetailPage() {
         }
         setPaymentFormData({
           paymentDate: today,
-          paymentAmount: '',
+          paymentAmount: defaultAmount,
           payeePerson: defaultPayee,
           proof: null,
           notes: '',
@@ -265,7 +338,7 @@ export default function EntryDetailPage() {
         // If it's a group or no borrower, clear the payee
         setPaymentFormData({
           paymentDate: today,
-          paymentAmount: '',
+          paymentAmount: defaultAmount,
           payeePerson: null,
           proof: null,
           notes: '',
@@ -288,6 +361,19 @@ export default function EntryDetailPage() {
     if (!paymentFormData.paymentAmount || amountValue <= 0) {
       setToast({ message: 'Please enter a valid payment amount', type: 'error' })
       return
+    }
+
+    // For STRAIGHT transactions, payment must equal the full amount borrowed
+    if (entry.transactionType === 'STRAIGHT_EXPENSE') {
+      const fullAmount = entry.amountBorrowed
+      const tolerance = 0.01 // Allow small floating point differences
+      if (Math.abs(amountValue - fullAmount) > tolerance) {
+        setToast({ 
+          message: `For Straight transactions, you must pay the full amount borrowed (₱${fullAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`, 
+          type: 'error' 
+        })
+        return
+      }
     }
 
     setSubmittingPayment(true)
@@ -435,6 +521,8 @@ export default function EntryDetailPage() {
           </div>
           <div className="flex items-center gap-3">
             {getStatusBadge(entry.status)}
+            {/* Only show action buttons if user is BORROWER (not LENDER) */}
+            {entry.userRole === 'BORROWER' && (
             <div className="flex items-center gap-2">
               {/* Complete Entry Button - Only show if not already paid */}
               {entry.status !== 'PAID' && (
@@ -482,6 +570,12 @@ export default function EntryDetailPage() {
                 <Trash2 className="w-4 h-4" />
               </button>
             </div>
+            )}
+            {entry.userRole === 'LENDER' && (
+              <span className="text-sm text-dark-400 italic">
+                View-only mode: Borrower payment status
+              </span>
+            )}
           </div>
         </div>
       </div>
@@ -651,6 +745,9 @@ export default function EntryDetailPage() {
                   <p className="text-sm text-dark-400 mt-1">Payment breakdown per person in this expense</p>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
+                  {/* Only show allocation action buttons if user is BORROWER */}
+                  {entry.userRole === 'BORROWER' && (
+                  <>
                   {paymentAllocations.length > 0 && (
                     <button
                       onClick={() => {
@@ -751,6 +848,13 @@ export default function EntryDetailPage() {
                     <DollarSign className="w-4 h-4" />
                     Divide by Amount
                   </button>
+                  </>
+                  )}
+                  {entry.userRole === 'LENDER' && (
+                    <span className="text-sm text-dark-400 italic">
+                      View-only: Borrower payment breakdown
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -760,7 +864,11 @@ export default function EntryDetailPage() {
                     <Users className="w-8 h-8 text-dark-500" />
                   </div>
                   <p className="text-dark-400 mb-2">No payment allocations created yet.</p>
-                  <p className="text-sm text-dark-500">Use the quick actions above to allocate the expense.</p>
+                  {entry.userRole === 'BORROWER' ? (
+                    <p className="text-sm text-dark-500">Use the quick actions above to allocate the expense.</p>
+                  ) : (
+                    <p className="text-sm text-dark-500">Borrower has not yet allocated payments.</p>
+                  )}
                 </div>
               ) : (
                 <div className="overflow-x-auto">
@@ -801,6 +909,8 @@ export default function EntryDetailPage() {
                             )}
                           </td>
                           <td>
+                            {/* Only show action buttons if user is BORROWER */}
+                            {entry.userRole === 'BORROWER' ? (
                             <div className="flex items-center gap-2">
                               {allocation.paymentAllocationStatus !== 'PAID' && (
                                 <button
@@ -862,6 +972,9 @@ export default function EntryDetailPage() {
                                 <Trash2 className="w-4 h-4 text-dark-400 hover:text-rose-400" />
                               </button>
                             </div>
+                            ) : (
+                              <span className="text-dark-500 text-sm italic">View-only</span>
+                            )}
                           </td>
                         </tr>
                       ))}
@@ -1031,10 +1144,17 @@ export default function EntryDetailPage() {
                           // Check if entry is fully paid and this term wasn't explicitly paid/skipped
                           const isEntryFullyPaid = entry.status === 'PAID'
                           const isTermPending = term.termStatus === 'UNPAID' || term.termStatus === 'NOT_STARTED'
+                          const isTermDelinquent = term.termStatus === 'DELINQUENT'
                           const isCompletedEarly = isEntryFullyPaid && isTermPending
                           
-                          const isPastDue = !isCompletedEarly && new Date(term.dueDate) < new Date() && term.termStatus !== 'PAID' && term.termStatus !== 'SKIPPED'
-                          const isCurrentTerm = isTermPending && !isCompletedEarly
+                          // Compare dates only (not time) - past due only if due date is strictly before today
+                          const today = new Date()
+                          today.setHours(0, 0, 0, 0)
+                          const dueDate = new Date(term.dueDate)
+                          dueDate.setHours(0, 0, 0, 0)
+                          const isPastDue = !isCompletedEarly && dueDate < today && term.termStatus !== 'PAID' && term.termStatus !== 'SKIPPED'
+                          // Allow paying if term is pending (UNPAID/NOT_STARTED) or delinquent
+                          const canPayTerm = (isTermPending || isTermDelinquent) && !isCompletedEarly
                           
                           return (
                             <tr 
@@ -1065,9 +1185,14 @@ export default function EntryDetailPage() {
                               <td>
                                 <div className="flex flex-col gap-1">
                                   {getTermStatusBadge(term.termStatus, isCompletedEarly)}
-                                  {term.termStatus === 'SKIPPED' && term.penaltyApplied && term.penaltyApplied > 0 && (
+                                  {(term.termStatus === 'SKIPPED' || term.termStatus === 'DELINQUENT') && term.penaltyApplied && term.penaltyApplied > 0 && (
                                     <span className="text-xs text-rose-400">
-                                      +₱{term.penaltyApplied.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} fee
+                                      +₱{term.penaltyApplied.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} late fee
+                                    </span>
+                                  )}
+                                  {term.termStatus === 'DELINQUENT' && (!term.penaltyApplied || term.penaltyApplied === 0) && (
+                                    <span className="text-xs text-rose-400">
+                                      Late fee will be applied
                                     </span>
                                   )}
                                 </div>
@@ -1078,45 +1203,73 @@ export default function EntryDetailPage() {
                                     <CheckCircle2 className="w-3.5 h-3.5" />
                                     No action needed
                                   </span>
-                                ) : isCurrentTerm ? (
+                                ) : canPayTerm ? (
+                                  /* Only show Pay Term and Skip buttons if user is BORROWER */
+                                  entry.userRole === 'BORROWER' ? (
                                   <div className="flex items-center gap-2">
                                     <button
-                                      onClick={() => handlePayTerm(term)}
+                                      onClick={async () => {
+                                        // If delinquent, show late fee warning and include late fee in payment
+                                        if (term.termStatus === 'DELINQUENT') {
+                                          setLoadingPenalty(true)
+                                          try {
+                                            const lateFeeRes = await installmentApi.getDelinquentLateFee(term.termId)
+                                            const lateFee = lateFeeRes.data.lateFee
+                                            setConfirmModal({
+                                              show: true,
+                                              title: 'Pay Delinquent Term with Late Fee',
+                                              message: `This term is past due. Paying now will incur a late fee of ₱${lateFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (5% of term amount or minimum ₱50).\n\nThe late fee will be automatically added to your payment amount.\n\nDo you want to continue?`,
+                                              onConfirm: () => handlePayTerm(term, lateFee)
+                                            })
+                                          } catch (error: any) {
+                                            setToast({ message: 'Error fetching late fee info', type: 'error' })
+                                          } finally {
+                                            setLoadingPenalty(false)
+                                          }
+                                        } else {
+                                          handlePayTerm(term)
+                                        }
+                                      }}
                                       className="btn-primary text-xs py-1.5 px-3"
                                     >
                                       <DollarSign className="w-3.5 h-3.5" />
                                       Pay Term
                                     </button>
-                                    <button
-                                      onClick={async () => {
-                                        // Fetch penalty preview first
-                                        setLoadingPenalty(true)
-                                        try {
-                                          const penaltyRes = await installmentApi.getSkipPenalty(term.termId)
-                                          const penalty = penaltyRes.data.penalty
-                                          setConfirmModal({
-                                            show: true,
-                                            title: 'Skip Term with Late Fee',
-                                            message: `Are you sure you want to skip Term ${term.termNumber}?\n\nA late fee of ₱${penalty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (5% of term amount or minimum ₱50) will be added to your remaining balance.\n\nThis action cannot be undone.`,
-                                            onConfirm: () => handleSkipTerm(term.termId)
-                                          })
-                                        } catch (error: any) {
-                                          setToast({ message: 'Error fetching penalty info', type: 'error' })
-                                        } finally {
-                                          setLoadingPenalty(false)
-                                        }
-                                      }}
-                                      disabled={skippingTerm === term.termId || loadingPenalty}
-                                      className="btn-secondary text-xs py-1.5 px-3"
-                                    >
-                                      {skippingTerm === term.termId || loadingPenalty ? (
-                                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                      ) : (
-                                        <SkipForward className="w-3.5 h-3.5" />
-                                      )}
-                                      Skip
-                                    </button>
+                                    {!isTermDelinquent && (
+                                      <button
+                                        onClick={async () => {
+                                          // Fetch penalty preview first
+                                          setLoadingPenalty(true)
+                                          try {
+                                            const penaltyRes = await installmentApi.getSkipPenalty(term.termId)
+                                            const penalty = penaltyRes.data.penalty
+                                            setConfirmModal({
+                                              show: true,
+                                              title: 'Skip Term with Late Fee',
+                                              message: `Are you sure you want to skip Term ${term.termNumber}?\n\nA late fee of ₱${penalty.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (5% of term amount or minimum ₱50) will be added to your remaining balance.\n\nThis action cannot be undone.`,
+                                              onConfirm: () => handleSkipTerm(term.termId)
+                                            })
+                                          } catch (error: any) {
+                                            setToast({ message: 'Error fetching penalty info', type: 'error' })
+                                          } finally {
+                                            setLoadingPenalty(false)
+                                          }
+                                        }}
+                                        disabled={skippingTerm === term.termId || loadingPenalty}
+                                        className="btn-secondary text-xs py-1.5 px-3"
+                                      >
+                                        {skippingTerm === term.termId || loadingPenalty ? (
+                                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        ) : (
+                                          <SkipForward className="w-3.5 h-3.5" />
+                                        )}
+                                        Skip
+                                      </button>
+                                    )}
                                   </div>
+                                  ) : (
+                                    <span className="text-dark-500 text-sm italic">View-only: Borrower payment status</span>
+                                  )
                                 ) : (
                                   <span className="text-dark-500 text-sm">-</span>
                                 )}
@@ -1150,13 +1303,16 @@ export default function EntryDetailPage() {
           <div className="glass-card overflow-hidden">
             <div className="p-6 border-b border-dark-800 flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold text-dark-100">Payment History</h2>
-              <button 
-                onClick={() => setShowPaymentModal(true)}
-                className="btn-primary"
-              >
-                <Plus className="w-4 h-4" />
-                Add Payment
-              </button>
+              {/* Only show "Add Payment" button for borrowers on incomplete entries */}
+              {entry.userRole === 'BORROWER' && entry.status !== 'PAID' && entry.amountRemaining > 0 && (
+                <button 
+                  onClick={() => setShowPaymentModal(true)}
+                  className="btn-primary"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Payment
+                </button>
+              )}
             </div>
 
             {payments.length === 0 ? (
@@ -1176,6 +1332,10 @@ export default function EntryDetailPage() {
                       <th>Change</th>
                       <th>Payee</th>
                       <th>Notes</th>
+                      {/* Only show Actions column if user is LENDER (for viewing) or BORROWER (for editing) */}
+                      {(entry.userRole === 'LENDER' || entry.userRole === 'BORROWER') && (
+                        <th>Actions</th>
+                      )}
                     </tr>
                   </thead>
                   <tbody>
@@ -1217,6 +1377,27 @@ export default function EntryDetailPage() {
                         <td className="text-dark-400">
                           {payment.notes || '-'}
                         </td>
+                        {/* Show View button for lenders, or edit/delete for borrowers */}
+                        {(entry.userRole === 'LENDER' || entry.userRole === 'BORROWER') && (
+                          <td>
+                            <div className="flex items-center gap-2">
+                              {/* View button - available for lenders and borrowers */}
+                              <button
+                                onClick={() => viewPaymentDetails(payment)}
+                                className="p-2 hover:bg-dark-800 rounded transition-colors"
+                                title="View Payment Details"
+                              >
+                                <Eye className="w-4 h-4 text-dark-400 hover:text-primary-400" />
+                              </button>
+                              {/* Edit/Delete buttons - only for borrowers */}
+                              {entry.userRole === 'BORROWER' && (
+                                <>
+                                  {/* Add edit/delete functionality here if needed */}
+                                </>
+                              )}
+                            </div>
+                          </td>
+                        )}
                       </tr>
                     ))}
                   </tbody>
@@ -1372,24 +1553,44 @@ export default function EntryDetailPage() {
                       required
                       value={paymentFormData.paymentAmount}
                       onChange={(e) => {
+                        // For STRAIGHT transactions, don't allow editing - must pay full amount
+                        if (entry.transactionType === 'STRAIGHT_EXPENSE') {
+                          return
+                        }
                         const raw = e.target.value.replace(/[^0-9.,]/g, '')
                         setPaymentFormData({ ...paymentFormData, paymentAmount: raw })
                       }}
                       onBlur={(e) => {
+                        if (entry.transactionType === 'STRAIGHT_EXPENSE') {
+                          return
+                        }
                         const formatted = formatCurrencyInput(e.target.value)
                         setPaymentFormData({ ...paymentFormData, paymentAmount: formatted })
                       }}
                       placeholder="0.00"
-                      className="input-field pl-8 font-mono"
+                      className={`input-field pl-8 font-mono ${
+                        entry.transactionType === 'STRAIGHT_EXPENSE' 
+                          ? 'bg-dark-800/50 cursor-not-allowed' 
+                          : ''
+                      }`}
+                      readOnly={entry.transactionType === 'STRAIGHT_EXPENSE'}
                     />
                   </div>
                   {entry && (
-                    <p className="mt-2 text-sm text-dark-500">
-                      Remaining amount: <span className="text-amber-400 font-medium">₱{entry.amountRemaining.toLocaleString()}</span>
-                    </p>
+                    <>
+                      {entry.transactionType === 'STRAIGHT_EXPENSE' ? (
+                        <p className="mt-2 text-sm text-amber-400 font-medium">
+                          For Straight transactions, you must pay the full amount borrowed: ₱{entry.amountBorrowed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-sm text-dark-500">
+                          Remaining amount: <span className="text-amber-400 font-medium">₱{entry.amountRemaining.toLocaleString()}</span>
+                        </p>
+                      )}
+                    </>
                   )}
-                  {/* Overpayment Warning */}
-                  {entry && paymentFormData.paymentAmount && (() => {
+                  {/* Overpayment Warning - Only show for non-STRAIGHT transactions */}
+                  {entry && entry.transactionType !== 'STRAIGHT_EXPENSE' && paymentFormData.paymentAmount && (() => {
                     const paymentValue = parseFloat(paymentFormData.paymentAmount.replace(/,/g, '')) || 0
                     const changeAmount = Number((paymentValue - entry.amountRemaining).toFixed(2))
                     if (changeAmount > 0) {
@@ -1850,6 +2051,7 @@ export default function EntryDetailPage() {
                   onClick={() => {
                     setShowInstallmentPaymentModal(false)
                     setSelectedTerm(null)
+                    setIncludedLateFees(0)
                     setPaymentFormData({
                       paymentDate: '',
                       paymentAmount: '',
@@ -1871,8 +2073,13 @@ export default function EntryDetailPage() {
                   <div>
                     <p className="text-xs text-dark-500 mb-1">Amount Due</p>
                     <p className="text-xl font-mono font-bold text-accent-400">
-                      ₱{entry.installmentPlan?.amountPerTerm.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      ₱{((entry.installmentPlan?.amountPerTerm || 0) + includedLateFees).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </p>
+                    {includedLateFees > 0 && (
+                      <p className="text-xs text-rose-400 mt-1">
+                        (includes ₱{includedLateFees.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} late fees)
+                      </p>
+                    )}
                   </div>
                   <div>
                     <p className="text-xs text-dark-500 mb-1">Remaining Balance</p>
@@ -1899,27 +2106,22 @@ export default function EntryDetailPage() {
                 </div>
 
                 <div>
-                  <label className="label">Payment Amount *</label>
+                  <label className="label">Payment Amount</label>
                   <div className="relative">
                     <span className="absolute left-3 top-1/2 -translate-y-1/2 text-dark-400 font-medium">₱</span>
                     <input
                       type="text"
                       required
+                      readOnly
                       value={paymentFormData.paymentAmount}
-                      onChange={(e) => {
-                        const raw = e.target.value.replace(/[^0-9.,]/g, '')
-                        setPaymentFormData({ ...paymentFormData, paymentAmount: raw })
-                      }}
-                      onBlur={(e) => {
-                        const formatted = formatCurrencyInput(e.target.value)
-                        setPaymentFormData({ ...paymentFormData, paymentAmount: formatted })
-                      }}
-                      placeholder="0.00"
-                      className="input-field pl-8 font-mono"
+                      className="input-field pl-8 font-mono bg-dark-800/50 cursor-not-allowed"
                     />
                   </div>
                   <p className="mt-2 text-sm text-dark-500">
-                    Suggested: <span className="text-accent-400 font-medium">₱{entry.installmentPlan?.amountPerTerm.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    Amount: <span className="text-accent-400 font-medium">₱{((entry.installmentPlan?.amountPerTerm || 0) + includedLateFees).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                    {includedLateFees > 0 && (
+                      <span className="text-rose-400 ml-1">(+₱{includedLateFees.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} late fees)</span>
+                    )}
                   </p>
                 </div>
 
@@ -1940,6 +2142,7 @@ export default function EntryDetailPage() {
                     onClick={() => {
                       setShowInstallmentPaymentModal(false)
                       setSelectedTerm(null)
+                      setIncludedLateFees(0)
                     }}
                     className="btn-secondary"
                   >
@@ -1964,6 +2167,198 @@ export default function EntryDetailPage() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Payment Detail Modal - For lenders to view payment details */}
+      {showPaymentDetailModal && selectedPaymentDetail && entry && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
+          <div className="glass-card p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto animate-slide-up">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-accent-500/20 flex items-center justify-center">
+                  <Receipt className="w-6 h-6 text-accent-400" />
+                </div>
+                <div>
+                  <h2 className="font-display text-xl font-bold text-dark-50">Payment Details</h2>
+                  <p className="text-sm text-dark-400">Payment information and proof</p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowPaymentDetailModal(false)
+                  setSelectedPaymentDetail(null)
+                  if (paymentProofUrl) {
+                    URL.revokeObjectURL(paymentProofUrl)
+                    setPaymentProofUrl(null)
+                  }
+                }}
+                className="p-2 hover:bg-dark-800 rounded-lg transition-colors"
+              >
+                <X className="w-5 h-5 text-dark-400" />
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Amount and Change */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="p-4 bg-dark-800/50 rounded-xl text-center">
+                  <p className="text-sm text-dark-400 mb-1">Amount Paid</p>
+                  <p className="text-2xl font-display font-bold text-accent-400">
+                    ₱{selectedPaymentDetail.paymentAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </p>
+                </div>
+                <div className="p-4 bg-dark-800/50 rounded-xl text-center">
+                  <p className="text-sm text-dark-400 mb-1">Change to Return</p>
+                  {selectedPaymentDetail.changeAmount && selectedPaymentDetail.changeAmount > 0 ? (
+                    <p className="text-2xl font-display font-bold text-amber-400">
+                      ₱{selectedPaymentDetail.changeAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </p>
+                  ) : (
+                    <p className="text-2xl font-display font-bold text-dark-500">₱0.00</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Change Alert */}
+              {selectedPaymentDetail.changeAmount && selectedPaymentDetail.changeAmount > 0 && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-full bg-amber-500/20 flex items-center justify-center flex-shrink-0">
+                    <DollarSign className="w-4 h-4 text-amber-400" />
+                  </div>
+                  <p className="text-sm text-amber-300">
+                    <strong>Overpayment:</strong> You need to return <strong>₱{selectedPaymentDetail.changeAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> as change to the borrower.
+                  </p>
+                </div>
+              )}
+
+              {/* Details Grid */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <p className="text-sm text-dark-500 mb-1">Payment Date</p>
+                  <div className="flex items-center gap-2 text-dark-200">
+                    <Calendar className="w-4 h-4 text-dark-400" />
+                    {format(new Date(selectedPaymentDetail.paymentDate), 'MMMM dd, yyyy')}
+                  </div>
+                </div>
+                
+                <div>
+                  <p className="text-sm text-dark-500 mb-1">Payee (Borrower)</p>
+                  <div className="flex items-center gap-2 text-dark-200">
+                    <User className="w-4 h-4 text-dark-400" />
+                    {selectedPaymentDetail.payeePersonName}
+                  </div>
+                </div>
+                
+                {entry.lenderPersonName && (
+                  <div className="col-span-2">
+                    <p className="text-sm text-dark-500 mb-1">Lender</p>
+                    <div className="flex items-center gap-2 text-primary-300">
+                      <User className="w-4 h-4 text-primary-400" />
+                      {entry.lenderPersonName}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Related Entry */}
+              {selectedPaymentDetail.entryId && entry && (
+                <div className="p-4 bg-dark-800/30 rounded-xl">
+                  <p className="text-sm text-dark-500 mb-2">Related Entry</p>
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="font-medium text-dark-200">{entry.entryName}</p>
+                      <code className="text-xs text-dark-500 font-mono">
+                        {entry.referenceId}
+                      </code>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Notes */}
+              {selectedPaymentDetail.notes && (
+                <div>
+                  <p className="text-sm text-dark-500 mb-2">Notes</p>
+                  <p className="text-dark-300 bg-dark-800/30 p-3 rounded-lg">
+                    {selectedPaymentDetail.notes}
+                  </p>
+                </div>
+              )}
+
+              {/* Payment Proof */}
+              {selectedPaymentDetail.hasProof && (
+                <div>
+                  <p className="text-sm text-dark-500 mb-2">Proof of Payment</p>
+                  {loadingProof ? (
+                    <div className="p-8 bg-dark-800/30 rounded-xl flex items-center justify-center">
+                      <Loader2 className="w-8 h-8 text-dark-400 animate-spin" />
+                      <span className="ml-3 text-dark-400">Loading proof...</span>
+                    </div>
+                  ) : paymentProofUrl ? (
+                    <div className="space-y-3">
+                      <div className="bg-dark-800/30 rounded-xl overflow-hidden">
+                        <img 
+                          src={paymentProofUrl} 
+                          alt="Payment proof" 
+                          className="w-full h-auto max-h-96 object-contain"
+                          onError={(e) => {
+                            // If image fails to load, show download option
+                            const target = e.currentTarget as HTMLImageElement
+                            target.style.display = 'none'
+                            const container = target.parentElement
+                            if (container) {
+                              container.innerHTML = `
+                                <div class="p-8 text-center">
+                                  <svg class="w-12 h-12 text-dark-500 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path>
+                                  </svg>
+                                  <p class="text-dark-400 mb-3">Proof file available</p>
+                                  <a href="${paymentProofUrl}" download="payment-proof-${selectedPaymentDetail.paymentId}.jpg" 
+                                     class="btn-secondary inline-flex items-center gap-2">
+                                    Download Proof
+                                  </a>
+                                </div>
+                              `
+                            }
+                          }}
+                        />
+                      </div>
+                      <a
+                        href={paymentProofUrl}
+                        download={`payment-proof-${selectedPaymentDetail.paymentId}.jpg`}
+                        className="btn-secondary text-sm inline-flex items-center gap-2"
+                      >
+                        <FileText className="w-4 h-4" />
+                        Download Proof
+                      </a>
+                    </div>
+                  ) : (
+                    <div className="p-4 bg-dark-800/30 rounded-xl text-center">
+                      <p className="text-dark-400">Proof not available</p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex items-center justify-end pt-4 border-t border-dark-800">
+                <button
+                  onClick={() => {
+                    setShowPaymentDetailModal(false)
+                    setSelectedPaymentDetail(null)
+                    if (paymentProofUrl) {
+                      URL.revokeObjectURL(paymentProofUrl)
+                      setPaymentProofUrl(null)
+                    }
+                  }}
+                  className="btn-secondary"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
         </div>

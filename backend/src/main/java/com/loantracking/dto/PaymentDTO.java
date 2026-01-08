@@ -22,6 +22,7 @@ public class PaymentDTO {
     private UUID entryId;
     private String entryName;
     private String entryReferenceId;
+    private boolean hasProof; // Indicates if payment has proof/attachment
 }
 
 

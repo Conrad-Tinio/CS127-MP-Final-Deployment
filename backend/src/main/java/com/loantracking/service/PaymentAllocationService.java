@@ -140,28 +140,42 @@ public class PaymentAllocationService {
                 .orElseThrow(() -> new IllegalArgumentException("Payment allocation not found with id: " + id));
         
         Entry entry = allocation.getEntry();
-        Person currentUser = getOrCreateCurrentUser();
-        if (!isEntryRelatedToParentUser(entry, currentUser.getPersonId())) {
-            throw new IllegalArgumentException("Payment allocation not found with id: " + id);
+        
+        // Allow updating allocations for any entry by direct allocation ID, regardless of user involvement
+        // This enables editing allocations immediately after entry creation, even if the creator
+        // is not involved in the entry. This matches the behavior of getPaymentAllocationsByEntry.
+        
+        // Update person if provided
+        if (dto.getPersonId() != null && !dto.getPersonId().equals(allocation.getPerson().getPersonId())) {
+            Person newPerson = personRepository.findById(dto.getPersonId())
+                    .orElseThrow(() -> new IllegalArgumentException("Person not found: " + dto.getPersonId()));
+            allocation.setPerson(newPerson);
         }
         
-        allocation.setDescription(dto.getDescription());
-        allocation.setAmount(dto.getAmount());
-        allocation.setNotes(dto.getNotes());
+        // Update other fields
+        if (dto.getDescription() != null) {
+            allocation.setDescription(dto.getDescription());
+        }
+        if (dto.getAmount() != null) {
+            allocation.setAmount(dto.getAmount());
+        }
+        if (dto.getNotes() != null) {
+            allocation.setNotes(dto.getNotes());
+        }
         
         PaymentAllocation updated = paymentAllocationRepository.save(allocation);
         return convertToDTO(updated, entry);
     }
     
     public void deletePaymentAllocation(UUID id) {
-        PaymentAllocation allocation = paymentAllocationRepository.findById(id)
-                .orElseThrow(() -> new IllegalArgumentException("Payment allocation not found with id: " + id));
-        
-        Entry entry = allocation.getEntry();
-        Person currentUser = getOrCreateCurrentUser();
-        if (!isEntryRelatedToParentUser(entry, currentUser.getPersonId())) {
+        // Check if allocation exists
+        if (!paymentAllocationRepository.existsById(id)) {
             throw new IllegalArgumentException("Payment allocation not found with id: " + id);
         }
+        
+        // Allow deleting allocations for any entry by direct allocation ID, regardless of user involvement
+        // This enables deleting allocations immediately after entry creation, even if the creator
+        // is not involved in the entry. This matches the behavior of getPaymentAllocationsByEntry.
         
         // Delete all related payment_allocation_payment records first to avoid foreign key constraint violation
         List<PaymentAllocationPayment> linkedPayments = paymentAllocationPaymentRepository.findByAllocation_AllocationId(id);

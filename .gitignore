@@ -8,12 +8,6 @@
 !env.example
 !*.example
 
-# Application Properties with sensitive data
-backend/src/main/resources/application.properties
-
-# But keep the example
-!backend/src/main/resources/application.properties.example
-
 # IDE
 .idea/
 .vscode/
@@ -29,8 +23,6 @@ backend/target/
 frontend/node_modules/
 frontend/dist/
 frontend/.vite/
-frontend/.env.local
-frontend/.env.*.local
 
 # Logs
 *.log

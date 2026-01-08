@@ -22,3 +22,6 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Scripts
+*.bat
+*.ps1

@@ -6,11 +6,15 @@ import com.loantracking.service.PaymentService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.MediaType;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.math.BigDecimal;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @RestController
@@ -56,6 +60,29 @@ public class PaymentController {
     public ResponseEntity<Void> deletePayment(@PathVariable UUID id) {
         paymentService.deletePayment(id);
         return ResponseEntity.noContent().build();
+    }
+    
+    @GetMapping("/{id}/proof")
+    public ResponseEntity<byte[]> getPaymentProof(@PathVariable UUID id) {
+        PaymentService.PaymentProofInfo proofInfo = paymentService.getPaymentProofWithInfo(id);
+        MediaType mediaType;
+        try {
+            mediaType = MediaType.parseMediaType(proofInfo.getContentType());
+        } catch (Exception e) {
+            mediaType = MediaType.IMAGE_JPEG; // Default fallback
+        }
+        return ResponseEntity.ok()
+                .contentType(mediaType)
+                .header(HttpHeaders.CONTENT_DISPOSITION, "inline")
+                .body(proofInfo.getProof());
+    }
+    
+    @GetMapping("/total-paid-penalties")
+    public ResponseEntity<Map<String, BigDecimal>> getTotalPaidPenalties() {
+        BigDecimal totalPaidPenalties = paymentService.getTotalPaidPenalties();
+        Map<String, BigDecimal> response = new HashMap<>();
+        response.put("totalPaidPenalties", totalPaidPenalties);
+        return ResponseEntity.ok(response);
     }
 }
 

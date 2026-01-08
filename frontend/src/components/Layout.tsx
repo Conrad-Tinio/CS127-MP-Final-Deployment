@@ -6,6 +6,7 @@ import {
   Users, 
   PlusCircle,
   Wallet,
+  TrendingUp,
   Receipt
 } from 'lucide-react'
 import { useUser } from '../contexts/UserContext'
