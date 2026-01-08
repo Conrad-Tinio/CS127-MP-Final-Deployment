@@ -1,0 +1,18 @@
+# Netlify Configuration for Loan Tracking System Frontend
+
+[build]
+  # Base directory (where package.json is)
+  base = "frontend"
+  
+  # Build command
+  command = "npm run build"
+  
+  # Publish directory (relative to base)
+  publish = "dist"
+
+# Handle SPA routing - redirect all routes to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+

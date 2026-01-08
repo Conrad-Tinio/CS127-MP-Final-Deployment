@@ -1,0 +1,45 @@
+# Application Configuration
+spring.application.name=loan-tracking-system
+server.port=8080
+
+# Database Configuration (Supabase PostgreSQL)
+# Using Session Pooler (IPv4 compatible)
+# IMPORTANT: Replace these with your actual Supabase connection details!
+spring.datasource.url=jdbc:postgresql://YOUR-HOST:5432/postgres?sslmode=require
+spring.datasource.username=postgres.YOUR-PROJECT-REF
+spring.datasource.password=YOUR-PASSWORD-HERE
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# JPA/Hibernate Configuration
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.show-sql=true
+spring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.properties.hibernate.jdbc.lob.non_contextual_creation=true
+# Use bytea for byte[] instead of OID
+spring.jpa.properties.hibernate.type.preferred_blob_type=MATERIALIZED_BLOB
+
+# Connection pool settings - allow retries and longer timeout
+spring.datasource.hikari.connection-timeout=30000
+spring.datasource.hikari.initialization-fail-timeout=-1
+spring.datasource.hikari.maximum-pool-size=5
+spring.datasource.hikari.minimum-idle=1
+
+# Lazy database initialization (connect only when needed)
+spring.jpa.properties.hibernate.temp.use_jdbc_metadata_defaults=false
+
+# CORS Configuration
+spring.web.cors.allowed-origins=http://localhost:5173
+spring.web.cors.allowed-methods=GET,POST,PUT,DELETE,OPTIONS
+spring.web.cors.allowed-headers=*
+spring.web.cors.allow-credentials=true
+
+# Logging Configuration
+logging.level.org.springframework.web=INFO
+logging.level.org.hibernate.SQL=DEBUG
+logging.level.org.hibernate.type.descriptor.sql.BasicBinder=TRACE
+
+
+
+
+

@@ -1,0 +1,52 @@
+# Environment files with sensitive data
+.env
+.env.local
+.env.*.local
+*.env
+
+# But keep the example files
+!env.example
+!*.example
+
+# Application Properties with sensitive data
+backend/src/main/resources/application.properties
+
+# But keep the example
+!backend/src/main/resources/application.properties.example
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+*~
+
+# Maven
+backend/target/
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+frontend/.env.local
+frontend/.env.*.local
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Build
+*.class
+*.jar
+!backend/.mvn/wrapper/*.jar
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
