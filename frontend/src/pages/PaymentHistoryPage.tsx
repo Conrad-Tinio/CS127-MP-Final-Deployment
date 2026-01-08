@@ -8,13 +8,10 @@ import {
   Calendar,
   User,
   DollarSign,
-  FileText,
   X,
   ExternalLink,
   Receipt,
   TrendingUp,
-  ArrowDownLeft,
-  ArrowUpRight,
   Eye,
   Filter
 } from 'lucide-react'
@@ -421,10 +418,6 @@ export default function PaymentHistoryPage() {
                   const entry = selectedPayment.entry
                   // If entry is PAID and total payments exceed amount borrowed
                   if (entry.status === 'PAID' && entry.amountRemaining === 0) {
-                    // For entries with single payment or calculate from total paid
-                    const totalPaid = entry.amountBorrowed - entry.amountRemaining + 
-                      (entry.payments?.reduce((sum, p) => sum + p.paymentAmount, 0) || selectedPayment.paymentAmount)
-                    
                     // Simple calculation: if this payment exceeds what was needed
                     const amountNeeded = entry.amountBorrowed
                     if (selectedPayment.paymentAmount > amountNeeded) {

@@ -6,11 +6,9 @@ import { format } from 'date-fns'
 import { 
   Plus, 
   Search, 
-  Filter,
   Calendar,
   User,
   Users,
-  ArrowUpDown,
   FileText
 } from 'lucide-react'
 

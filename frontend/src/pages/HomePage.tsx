@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { dashboardApi, type DashboardSummary } from '../services/api'
-import type { Entry } from '../types'
 import { format } from 'date-fns'
 import { 
   TrendingUp, 
@@ -65,20 +64,6 @@ export default function HomePage() {
     if (percent < 0.01) return percent.toFixed(4) // Show 4 decimals for very small percentages
     if (percent < 1) return percent.toFixed(2) // Show 2 decimals for small percentages
     return percent.toFixed(1) // Show 1 decimal for larger percentages
-  }
-  
-  // Format large numbers with abbreviations
-  const formatCurrency = (amount: number): string => {
-    if (amount >= 1000000000) {
-      return `₱${(amount / 1000000000).toFixed(2)}B`
-    }
-    if (amount >= 1000000) {
-      return `₱${(amount / 1000000).toFixed(2)}M`
-    }
-    if (amount >= 1000) {
-      return `₱${(amount / 1000).toFixed(2)}K`
-    }
-    return `₱${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
   }
   
   // Full format for detailed display
